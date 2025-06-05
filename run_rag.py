@@ -1,5 +1,7 @@
 import argparse
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Any, Tuple
 import uvicorn
@@ -14,6 +16,15 @@ from embedding import get_embedding
 
 # 创建 FastAPI 实例
 app = FastAPI()
+
+# 添加 CORS 中间件以允许处理 OPTIONS 请求
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 可根据需要替换为前端域名
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 # 定义输入数据模型
 class RagRequest(BaseModel):
@@ -60,7 +71,7 @@ def RagSearch(user_question: str, catagory: int, top_k: int = 30) -> List[Dict[s
     for idx in indices[0]:
         if idx < len(metadata_list):
             meta = metadata_list[idx]
-            if catagory == -1 or meta.get("catagory") == catagory:
+            if catagory == 0 or meta.get("catagory") == catagory:
                 results.append(meta)
                 if len(results) >= top_k:
                     break
@@ -74,6 +85,7 @@ SYSTEM_PROMPT = f'''
 json格式的字符串是一个列表，列表中的每个元素是一个字符串，描述了一个课程。
 查询就是一个朴素的字符串，是用户的选课需求。
 你的任务是：从课程列表中选择一到三门课程作为用户的选课推荐，要求尽可能满足用户的选课需求。
+请注意，课程列表可能混入一些随机数据，也可能是一个空列表，没有可用或满足要求课程的情况下你可以不推荐任何课程。
 你可以输出任何思考过程，但是最终需要形式化的给出结果。具体地说，你可以先输出任何东西，比如解析用户的需求，\
 分析提供的课程列表等。然后你需要输出一个特别标志 {SEP_TOKEN}，在该标志后面是一个json格式的列表。列表中的\
 每个元素是一个字典，包含"课程名称"和"理由"两个项目。
@@ -126,7 +138,7 @@ def LLMParse(llm_response: str) -> Tuple[int, str, List[Dict[str, str]]]:
 async def rag_endpoint(request_data: RagRequest):
     global rag_entry
     try:
-        results = RagSearch(request_data.userQuestion, request_data.catagory, rag_entry)
+        results = RagSearch(request_data.userQuestion, int(request_data.catagory), rag_entry)
         llm_response = LLMCall(results, request_data.userQuestion)
         llm_parse_status, llm_response_text, llm_response_list = LLMParse(llm_response)
         return RagResponse(status="success", data={
@@ -139,6 +151,10 @@ async def rag_endpoint(request_data: RagRequest):
     except Exception as e:
         return RagResponse(status="error", data={"message": str(e)})
 
+@app.options("/rag")
+async def options_handler():
+    return JSONResponse(content={}, status_code=204)
+
 # 主函数：支持从命令行加载资料库路径
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run RAG search server.")
@@ -150,6 +166,8 @@ if __name__ == "__main__":
     parser.add_argument("--llm_api_key", type=str, required=True, help="LLM API Key")
     parser.add_argument("--llm_model", type=str, required=True, help="LLM model name")
     args = parser.parse_args()
+
+    rag_entry = args.rag_entry
 
     llm_model = args.llm_model
     oai_client = OpenAI(api_key=args.llm_api_key, base_url=args.llm_api_base)
